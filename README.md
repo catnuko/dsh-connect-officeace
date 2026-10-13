@@ -1,7 +1,8 @@
 # dsh-connect-officeace
 
 让 DSH 直接复用本机 **OfficeAce** 已经登录的华为 MaaS 模型通道，把 OfficeAce
-内置的模型变成 DSH 里的一个 provider（路由 id：`officeace`）。
+内置的模型变成 DSH 里的一个 provider（路由 id：`officeace`），并在输入框工具栏
+显示该账号的**积分余额**。
 
 这是 `dsh-connect-trae` / `dsh-qoder-connect` 的同族插件：三者都复用另一个桌面应用
 已经持有的模型凭据，不改动 DSH profile 的默认模型，只新增一个可选 provider。
@@ -17,6 +18,7 @@
 | 是否需要 `@earendil-works/pi-ai` | 需要（`PiAiAdapter`） | 需要（`PiAiAdapter`） | **不需要** |
 | 凭据来源 | `storage.json`（自研解密） | 自管 `settings.json` + PAT | **OfficeAce `storage.sqlite` 会话表（1.3.4+），DPAPI profile 为旧版回退** |
 | 实现方式 | 私有协议 → shim → pi-ai | 私有协议 → shim → pi-ai | **手写 `LlmAdapter` + 直接 `fetch`** |
+| 积分余额 | 输入框工具栏读数 + 账号浮层 | — | **输入框工具栏读数 + 分组明细浮层** |
 
 Trae 与 Qoder 之所以要起回环 shim，是因为它们的上游是私有协议，必须翻译成 OpenAI
 协议后才能交给 `dsh-llm-pi-ai`。OfficeAce 的网关本身就是 OpenAI 兼容的
@@ -68,6 +70,58 @@ Trae 与 Qoder 之所以要起回环 shim，是因为它们的上游是私有协
 
 > 注意：本插件借用的是用户本机 OfficeAce 自己的账号凭据，不是官方开放 API。
 > 调用会消耗该账号的 OfficeAce / 华为 MaaS 配额。
+
+---
+
+## 积分余额
+
+输入框工具栏（「专家」与模型选择器之间）会显示 `OfficeAce · <剩余积分>`，
+**只在当前会话选中的模型属于本插件时出现**。整块可点击，弹出浮层展示：
+
+- 当前套餐与剩余/总计积分
+- 各积分组的明细（套餐、新用户福利、每日签到……），含各自的剩余/总计与到期时间
+- 手动刷新按钮
+
+每 5 分钟自动刷新，也可以点浮层里的「刷新」立即读一次。
+
+### 数据从哪来
+
+OfficeAce 的**模型网关不提供余额接口**（实测 30 余个候选路径全部返回
+`404 APIG.0101`）。积分数据在另一侧：OfficeAce 桌面应用在自己机器上起了一个
+本地 API（`https://127.0.0.1:3004`，自签证书），它的 Web UI 通过
+`GET /api/subscription/current` 读订阅与积分。
+
+该端点要求三个自定义头，取值全部来自 OfficeAce 自己的会话记录
+（`storage.sqlite` 的 `oc_kv_string` 表，与模型凭据**同一份记录**）：
+
+```
+X-Office-Claw-User:    <userId>
+Authorization:         Bearer <sessionId>
+X-Office-Claw-Session: <sessionId>
+```
+
+因此本插件复用同一份身份去读这个只读端点——与复用模型凭据是同一个边界
+（不防同用户进程）。**整个链路只发 GET，没有任何写操作。**
+
+### 两个必须知道的限制
+
+1. **OfficeAce 必须正在运行。** 本地 API 随应用启动/退出。它没运行时读数
+   整块不显示，DSH 照常能用 `officeace` 模型（模型走外网网关，与本地 API 无关）。
+2. **读数走 HTTPS + 自签证书。** 签发它的根 CA 不在 Windows 信任库里，所以
+   插件用 `node:https` 的 per-request `ca` 选项显式信任
+   `<install>/.office-claw/certs/root-ca.pem`，**而不是**设
+   `NODE_TLS_REJECT_UNAUTHORIZED=0`——那会削弱 DSH 进程里所有 TLS 连接。
+
+### 读数口径
+
+浮层与读数显示的**顶层汇总**（`totalCredits - usedCredits`），与 OfficeAce
+自己的订阅卡片对得上。分组明细按上游顺序原样列出（含已过期的，加删除线），
+因为「为什么余额比昨天少」的答案就在过期行里。
+
+分组之和不等于汇总是**正常的**：实测本机三个分组的 remaining 之和是
+`500 + 4000 + 675.18 = 5175.18`，而汇总 remaining 是 `6175.18` —— 差的那 1000
+是 `bonusSkus` 里的「国庆黄金周·登录翻倍礼」，它没有出现在 `creditGroups` 里。
+分组是会漏的，所以不做分组求和。
 
 ---
 
@@ -124,7 +178,7 @@ node scripts/pack.mjs
 
 # 2) 用 DSH 的 plugin_manager 安装
 #    action: install_bundle
-#    target: D:/document/dsh/dsh-connect-officeace/dist/dsh-connect-officeace-0.2.1.tgz
+#    target: D:/document/dsh/dsh-connect-officeace/dist/dsh-connect-officeace-0.3.0.tgz
 ```
 
 为什么不能安装目录：`install_bundle` 对本地**目录**会写成 `link:` 依赖，pnpm 生成
@@ -142,7 +196,22 @@ linked layer，并且**在宿主进程启动时就把裸包名 `dsh-connect-offi
 > 不足以在当前进程内生效。
 
 安装后 DSH 会新增一个 provider 路由 `officeace`，**不会**改动 profile 的默认模型。
-想用它时，在 DSH 里把模型切到 `officeace` 下的任一模型即可。
+想用它时，在 DSH 里把模型切到 `officeace` 下的任一模型即可。切过去之后，输入框
+工具栏就会出现积分读数。
+
+## 文件结构
+
+```
+dsh-connect-officeace/
+├── lib/
+│   ├── index.js          宿主半边：provider 注册 + 积分读数路由
+│   ├── credentials.js    凭据解析（SQLite 会话 / DPAPI 回退）+ 会话身份
+│   ├── credits.js        本地 API 只读客户端 + 积分文档归一化
+│   └── client.js         浏览器半边：输入框工具栏积分读数
+├── cordis.patch.yml      声明插入到 DSH profile
+├── scripts/pack.mjs      打包为可安装的 .tgz
+└── package.json          dsh.bundle.patch / dsh.client.inject / peerDeps
+```
 
 ## 配置项
 
@@ -172,6 +241,15 @@ Web 设置面板里直接填写。
 | `TRANSPORT` | 网络不可达或流中途截断 |
 | `EMPTY_RESPONSE` | 网关返回零内容块（可安全重试） |
 
+积分读数不走 `LlmError`：它不是一个模型请求，失败时降级为「不显示」而不是
+报错。读数状态有三种，客户端按状态区分处理：
+
+| 状态 | 含义 | 界面表现 |
+|---|---|---|
+| `available` | 读到了积分 | 正常显示数值 |
+| `unreachable` | OfficeAce 本地 API 未监听 | 整块不渲染 |
+| `unavailable` | 服务在但读不到（未登录 / 身份失效 / 响应畸形） | 保留上一次的数值；从未读到过则显示「—」 |
+
 最直接的检查方式：
 
 ```js
@@ -179,4 +257,17 @@ const { OfficeAceCredentials } = await import("./lib/credentials.js");
 console.log(await new OfficeAceCredentials().diagnose());
 ```
 
-`diagnose()` 只报告各环节的存在性与原因，**不会输出任何密钥**。
+`diagnose()` 只报告各环节的存在性与原因，**不会输出任何密钥**。其中
+`sessionPresent` 表示积分读数所需的会话身份是否就绪。
+
+单独检查积分读数：
+
+```js
+const { OfficeAceCreditsClient } = await import("./lib/credits.js");
+const { OfficeAceCredentials } = await import("./lib/credentials.js");
+const store = new OfficeAceCredentials();
+console.log(await new OfficeAceCreditsClient({ credentialStore: () => store }).read());
+```
+
+返回三种状态：`available`（带 `remaining`/`total`/`groups`）、`unreachable`
+（OfficeAce 未运行）、`unavailable`（带 `reason`，如 `not-signed-in`）。

@@ -1,8 +1,8 @@
 {
   "name": "dsh-connect-officeace",
   "displayName": "DSH Connect OfficeAce",
-  "description": "把本机 OfficeAce（华为 MaaS 网关）已登录的模型接入 DeepSeek Harness：复用其内置模型凭据，无需重新配置 API Key。",
-  "version": "0.2.1",
+  "description": "把本机 OfficeAce（华为 MaaS 网关）已登录的模型接入 DeepSeek Harness：复用其内置模型凭据，无需重新配置 API Key，并在输入框工具栏显示积分余额。",
+  "version": "0.3.0",
   "author": "local",
   "license": "MIT",
   "keywords": [
@@ -19,6 +19,7 @@
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",
+    "./client": "./lib/client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
@@ -30,6 +31,14 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-locale"
+      ],
+      "platform": "web"
     }
   },
   "peerDependencies": {
