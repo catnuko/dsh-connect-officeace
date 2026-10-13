@@ -1,0 +1,4 @@
+# Register the OfficeAce provider without changing the profile default model.
+- insert:
+    - id: llm-officeace-2
+      name: dsh-connect-officeace
